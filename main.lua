@@ -1,275 +1,171 @@
-
--- MM2 TRADERIE VALUE LABELS V2
--- No dashboard / no repeated full scans
-
-local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
-
+-- MM2 Traderie overlay V3: no dashboard; low-frequency tracking.
+-- This reads visible Roblox UI and a GitHub-hosted value list.
+-- Unknown prices: N/A; known zero prices: 0.
+local Players = game:GetService('Players')
+local HttpService = game:GetService('HttpService')
+local GuiService = game:GetService('GuiService')
 local player = Players.LocalPlayer
-local pg = player:WaitForChild("PlayerGui")
-local env = getgenv()
+local pg = player:WaitForChild('PlayerGui')
+local env = getgenv and getgenv() or _G
+if type(env.MM2ValuesStop) == 'function' then pcall(env.MM2ValuesStop) end
 
--- Stop older version
-if type(env.MM2ValuesStop) == "function" then
-    pcall(env.MM2ValuesStop)
-end
-
-local running = true
-local connections = {}
-local slots = {}
-local values = {}
-local icons = {}
-local loaded = 0
-
-local base =
-    "https://raw.githubusercontent.com/" ..
-    "zeebinski/MM2-Values/main/"
-
-local function log(...)
-    print("[MM2 VALUES]", ...)
-end
-
-local function normalize(s)
-    return tostring(s or ""):lower()
-        :gsub("[^%w]", "")
-end
-
-local function fetch(name)
+local alive, connections, tags = true, {}, {}
+local function log(...) print('[MM2 VALUES]', ...) end
+local function key(s) return tostring(s or ''):lower():gsub('[^%w]', '') end
+local function wire(c) table.insert(connections, c) end
+local values, icons = {}, {}
+local base = 'https://raw.githubusercontent.com/zeebinski/MM2-Values/main/'
+local function readJSON(file)
     local ok, data = pcall(function()
-        return HttpService:JSONDecode(
-            game:HttpGet(base .. name, true)
-        )
+        return HttpService:JSONDecode(game:HttpGet(base .. file .. '?v=' .. tostring(os.time()), true))
     end)
-
-    if ok and type(data) == "table" then
-        return data
+    if not ok or type(data) ~= 'table' then
+        warn('[MM2 VALUES] Could not load', file, tostring(data))
+        return {}
     end
-
-    warn("[MM2 VALUES] Cannot load", name)
-    return {}
+    return data
 end
-
-local function loadData()
-    local data = fetch("values.json")
-    local iconData = fetch("icons.json")
-
-    values = {}
-    icons = {}
-    loaded = 0
-
-    for name, value in pairs(data.items or {}) do
-        if type(value) == "number" then
-            values[normalize(name)] = value
-            loaded += 1
-        end
+local db = readJSON('values.json')
+local priceCount = 0
+for name, price in pairs(db.items or {}) do
+    if type(price) == 'number' and price >= 0 then
+        values[key(name)] = price
+        priceCount += 1
     end
-
-    for id, name in pairs(iconData.items or {}) do
-        icons[tostring(id)] = tostring(name)
-    end
-
-    log("Traderie prices loaded:", loaded)
-    log("Icon mappings loaded:", 
-        (function()
-            local n = 0
-            for _ in pairs(icons) do n += 1 end
-            return n
-        end)()
-    )
 end
+local iconDB = readJSON('icons.json')
+local iconCount = 0
+for id, name in pairs(iconDB.items or {}) do
+    icons[tostring(id)] = tostring(name)
+    iconCount += 1
+end
+log('Prices loaded:', priceCount, '| image mappings:', iconCount)
+if priceCount == 0 then warn('[MM2 VALUES] values.json has no prices. Labels will say N/A.') end
 
-local function targetUI(obj)
-    local p = obj
+-- This independent overlay avoids clipping within Roblox inventory slots.
+local overlay = Instance.new('ScreenGui')
+overlay.Name = 'MM2TraderieOverlay'
+overlay.IgnoreGuiInset = true
+overlay.ResetOnSpawn = false
+overlay.DisplayOrder = 10000
+overlay.Parent = pg
 
-    while p and p ~= pg do
-        local n = p.Name:lower()
-
-        if n:find("inventory", 1, true)
-            or n:find("trade", 1, true)
-            or n:find("weapons", 1, true)
-            or n:find("offer", 1, true)
-            or n:find("items", 1, true) then
-            return true
-        end
-
-        p = p.Parent
+local function isTarget(obj)
+    local node = obj
+    while node and node ~= pg do
+        local n = node.Name:lower()
+        if n:find('inventory', 1, true) or n:find('trade', 1, true)
+           or n:find('offer', 1, true) or n:find('weapons', 1, true)
+           or n:find('items', 1, true) then return true end
+        node = node.Parent
     end
-
     return false
 end
-
-local function getName(obj)
-    -- First try image-ID mappings
-    local image = tostring(obj.Image or "")
-    local id = image:match("%d+")
-
-    if id and icons[id] then
-        return icons[id]
+local function shown(obj)
+    local node = obj
+    while node and node ~= pg do
+        if node:IsA('GuiObject') and not node.Visible then return false end
+        if node:IsA('ScrollingFrame') then
+            local p, sz = obj.AbsolutePosition, obj.AbsoluteSize
+            local a, b = node.AbsolutePosition, node.AbsoluteSize
+            if p.X + sz.X <= a.X or p.X >= a.X + b.X
+                or p.Y + sz.Y <= a.Y or p.Y >= a.Y + b.Y then return false end
+        end
+        node = node.Parent
     end
-
-    -- Next look for actual item names
-    local p = obj
-
+    return node == pg
+end
+local function guessName(obj)
+    local imageId = tostring(obj.Image):match('%d+')
+    if imageId and icons[imageId] then return icons[imageId] end
+    local node = obj
     for _ = 1, 3 do
-        if not p or p == pg then break end
-
-        local candidates = {
-            p.Name,
-            p:GetAttribute("ItemName"),
-            p:GetAttribute("WeaponName"),
-            p:GetAttribute("Name"),
-        }
-
-        for _, name in pairs(candidates) do
-            if type(name) == "string"
-                and values[normalize(name)] ~= nil then
-                return name
+        if not node or node == pg then break end
+        local opts = {node.Name, node:GetAttribute('ItemName'), node:GetAttribute('WeaponName')}
+        for _, name in pairs(opts) do
+            if type(name) == 'string' and values[key(name)] ~= nil then return name end
+        end
+        for _, child in ipairs(node:GetChildren()) do
+            if child:IsA('TextLabel') or child:IsA('TextButton') then
+                if values[key(child.Text)] ~= nil then return child.Text end
             end
         end
+        node = node.Parent
+    end
+    return nil
+end
+local function qualify(obj)
+    if not (obj:IsA('ImageLabel') or obj:IsA('ImageButton')) then return false end
+    if obj:IsDescendantOf(overlay) or not isTarget(obj) then return false end
+    if obj.Image == '' then return false end
+    local s = obj.AbsoluteSize
+    return s.X >= 30 and s.Y >= 30 and s.X <= 160 and s.Y <= 160
+end
+local count, maxSlots = 0, 220
+local function add(obj)
+    if not alive or tags[obj] or count >= maxSlots or not qualify(obj) then return end
+    local tag = Instance.new('TextLabel')
+    tag.Name = 'MM2ValueTag'
+    tag.Size = UDim2.fromOffset(49, 18)
+    tag.BackgroundColor3 = Color3.fromRGB(14, 14, 19)
+    tag.BackgroundTransparency = 0.2
+    tag.BorderSizePixel = 0
+    tag.Font = Enum.Font.GothamBold
+    tag.TextSize = 12
+    tag.TextColor3 = Color3.fromRGB(255, 229, 115)
+    tag.ZIndex = 10
+    tag.Visible = false
+    tag.Parent = overlay
+    local name = guessName(obj)
+    local price = name and values[key(name)] or nil
+    tag.Text = price ~= nil and tostring(price) or 'N/A'
+    tags[obj] = tag
+    count += 1
+end
+local descendants = pg:GetDescendants()
+for i, obj in ipairs(descendants) do
+    if obj ~= overlay and qualify(obj) then add(obj) end
+    if i % 300 == 0 then task.wait() end -- spread discovery across frames
+end
+log('Candidate image slots:', count, '| no dashboard')
+wire(pg.DescendantAdded:Connect(function(obj)
+    if alive and (obj:IsA('ImageLabel') or obj:IsA('ImageButton')) then
+        -- Defer until layout and parent tree settle.
+        task.defer(function() if alive then add(obj) end end)
+    end
+end))
 
-        for _, child in ipairs(p:GetChildren()) do
-            if child:IsA("TextLabel")
-                or child:IsA("TextButton") then
+local function stop()
+    if not alive then return end
+    alive = false
+    for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+    table.clear(connections)
+    overlay:Destroy()
+    table.clear(tags)
+    log('Stopped')
+end
+env.MM2ValuesStop = stop
 
-                if values[normalize(child.Text)] ~= nil then
-                    return child.Text
+-- Position only existing tags. No repeated PlayerGui:GetDescendants() calls.
+task.spawn(function()
+    while alive do
+        for slot, tag in pairs(tags) do
+            if not slot.Parent then
+                tag:Destroy()
+                tags[slot] = nil
+                count -= 1
+            else
+                local s = slot.AbsoluteSize
+                local visible = s.X >= 30 and s.Y >= 30 and shown(slot)
+                tag.Visible = visible
+                if visible then
+                    local p = slot.AbsolutePosition
+                    -- IgnoreGuiInset=true uses screen coordinates.
+                    tag.Position = UDim2.fromOffset(math.floor(p.X + 2), math.floor(p.Y + 2))
                 end
             end
         end
-
-        p = p.Parent
-    end
-
-    return nil
-end
-
-local function qualifies(obj)
-    if not (
-        obj:IsA("ImageLabel")
-        or obj:IsA("ImageButton")
-    ) then
-        return false
-    end
-
-    if not targetUI(obj) then return false end
-
-    -- Avoid tiny decorative icons and giant images
-    local size = obj.AbsoluteSize
-    if size.X < 25 or size.Y < 25 then
-        return false
-    end
-
-    if size.X > 200 or size.Y > 200 then
-        return false
-    end
-
-    return obj.Image ~= ""
-end
-
-local function createLabel(slot)
-    if slots[slot] then return end
-
-    local name = getName(slot)
-    local value = name and values[normalize(name)]
-
-    local label = Instance.new("TextLabel")
-    label.Name = "MM2TraderieValue"
-    label.Size = UDim2.fromOffset(52, 18)
-    label.Position = UDim2.fromOffset(2, 2)
-    label.BackgroundColor3 = Color3.fromRGB(15,15,20)
-    label.BackgroundTransparency = 0.2
-    label.TextColor3 = Color3.fromRGB(255,230,100)
-    label.Font = Enum.Font.GothamBold
-    label.TextSize = 12
-    label.TextScaled = false
-    label.BorderSizePixel = 0
-    label.ZIndex = slot.ZIndex + 5
-    label.Text = value ~= nil
-        and tostring(value)
-        or "N/A"
-    label.Parent = slot
-
-    slots[slot] = label
-end
-
-local function updateSlot(slot, label)
-    if not slot.Parent then
-        if label.Parent then label:Destroy() end
-        slots[slot] = nil
-        return
-    end
-
-    local name = getName(slot)
-    local value = name and values[normalize(name)]
-
-    local newText = value ~= nil
-        and tostring(value)
-        or "N/A"
-
-    if label.Text ~= newText then
-        label.Text = newText
-    end
-end
-
-local function stop()
-    running = false
-
-    for _, c in ipairs(connections) do
-        c:Disconnect()
-    end
-
-    for slot, label in pairs(slots) do
-        if label.Parent then label:Destroy() end
-        slots[slot] = nil
-    end
-
-    log("Stopped")
-end
-
-env.MM2ValuesStop = stop
-
-log("Starting")
-loadData()
-
--- Initial scan
-local scanned = 0
-
-for _, obj in ipairs(pg:GetDescendants()) do
-    if qualifies(obj) then
-        createLabel(obj)
-        scanned += 1
-    end
-
-    if scanned >= 250 then break end
-end
-
-log("Initial candidate slots:", scanned)
-
--- Track newly added inventory images
-table.insert(connections,
-    pg.DescendantAdded:Connect(function(obj)
-        if not running then return end
-
-        if qualifies(obj) then
-            createLabel(obj)
-        end
-    end)
-)
-
--- Update tracked labels without rescanning PlayerGui
-task.spawn(function()
-    while running do
-        task.wait(1.5)
-
-        local total = 0
-
-        for slot, label in pairs(slots) do
-            updateSlot(slot, label)
-            total += 1
-        end
+        task.wait(0.5)
     end
 end)
-
-log("Label tracker active")
-log("No dashboard created")
-log("Stop with getgenv().MM2ValuesStop()")
+log('Overlay active. To stop: getgenv().MM2ValuesStop()')
