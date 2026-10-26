@@ -93,7 +93,7 @@ local function applyToName(name)
 end
 local function enqueue(name)
  local key=norm(name)
- if key=='' or pending[key] then return end
+ if key=='' or pending[key] or LOOKUP_URL:find('REPLACE%-WITH') then return end
  local _,fresh=getCached(name)
  if fresh then return end
  pending[key]=true
@@ -126,14 +126,32 @@ task.spawn(function()
   else task.wait(.1) end
  end
 end)
+local BLOCKED = {
+ weapons=true,effects=true,powers=true,emotes=true,radios=true,pets=true,
+ inventory=true,shop=true,craftingstation=true,view=true,enterCode=true,
+ redeem=true,search=true,classic=true,holiday=true,season1=true,
+ default=true
+}
 local function hasInventoryAncestor(obj)
  local p=obj
  while p and p~=pg do
   local n=p.Name:lower()
-  if n:find('inventory',1,true) or n:find('trade',1,true) or n:find('weapons',1,true) then return true end
+  if n:find('inventory',1,true) or n:find('trade',1,true)
+    or n:find('weapons',1,true) then return true end
   p=p.Parent
  end
  return false
+end
+local function inventoryGrid(card)
+ -- Item cards must be in a scrolling item grid, never in category buttons.
+ local p=card.Parent
+ local depth=0
+ while p and p~=pg and depth<7 do
+  if p:IsA('ScrollingFrame') then return p end
+  p=p.Parent
+  depth+=1
+ end
+ return nil
 end
 local function isVisible(obj)
  local p=obj
@@ -143,31 +161,43 @@ local function isVisible(obj)
  end
  return p==pg
 end
+local function looksLikeIcon(card)
+ if (card:IsA('ImageLabel') or card:IsA('ImageButton')) and card.Image~='' then return true end
+ for _,child in ipairs(card:GetChildren()) do
+  if (child:IsA('ImageLabel') or child:IsA('ImageButton')) and child.Image~='' then
+   if child.AbsoluteSize.X>=25 and child.AbsoluteSize.Y>=25 then return true end
+  end
+ end
+ return false
+end
 local function itemText(card)
- for _,node in ipairs(card:GetChildren())do
-  if node:IsA('TextLabel') or node:IsA('TextButton') then
+ local best,bottom=nil,-1
+ for _,node in ipairs(card:GetChildren()) do
+  if (node:IsA('TextLabel') or node:IsA('TextButton')) and node.Name~='MM2ItemValue' then
    local t=node.Text:gsub('^%s+',''):gsub('%s+$','')
-   if t~='' and #t<65 and not t:find('^%d+$') and not t:find('^x%d+$') and node.Name~='MM2ItemValue' then
-    return t
+   local k=norm(t)
+   if #t>=2 and #t<=45 and not BLOCKED[k] and not t:match('^%d+$')
+     and not t:match('^[xX]%d+$') and node.AbsolutePosition.Y>bottom then
+    best=t;bottom=node.AbsolutePosition.Y
    end
   end
  end
- return nil
+ return best
 end
 local function cardForText(obj)
  if not (obj:IsA('TextLabel') or obj:IsA('TextButton')) then return nil end
  if obj.Name=='MM2ItemValue' then return nil end
- local text=obj.Text
- if type(text)~='string' or #text<2 or #text>65 then return nil end
- if not hasInventoryAncestor(obj) then return nil end
  local card=obj.Parent
  if not card or not card:IsA('GuiObject') then return nil end
- if card.AbsoluteSize.X<35 or card.AbsoluteSize.Y<40 or card.AbsoluteSize.X>200 then return nil end
- local img=false
- for _,child in ipairs(card:GetChildren())do
-  if (child:IsA('ImageLabel') or child:IsA('ImageButton')) and child.Image~='' then img=true;break end
- end
- if not img then return nil end
+ local sz=card.AbsoluteSize
+ if sz.X<65 or sz.Y<65 or sz.X>185 or sz.Y>190 then return nil end
+ if not inventoryGrid(card) then return nil end
+ if not hasInventoryAncestor(card) then return nil end
+ if not looksLikeIcon(card) then return nil end
+ local item=itemText(card)
+ if not item then return nil end
+ -- The item name belongs near the bottom of the item card, not a header.
+ if obj.Text:gsub('^%s+',''):gsub('%s+$','')~=item then return nil end
  return card
 end
 local function discover(obj)
@@ -246,5 +276,5 @@ task.spawn(function()
   task.wait(.4)
  end
 end)
-log('Started. Recognized cards:',(function()local n=0 for _ in pairs(tracked)do n+=1 end return n end)())
+log('V9 item-grid only. Started. Recognized cards:',(function()local n=0 for _ in pairs(tracked)do n+=1 end return n end)())
 if LOOKUP_URL:find('REPLACE%-WITH')then warn('[MM2 LIVE] Set LOOKUP_URL to your Worker URL in main.lua first!') end
