@@ -1,4 +1,4 @@
--- MM2 UI LABEL VISIBILITY FIX / V4
+-- MM2 TRADERIE OVERLAY V5 / draggable working status bar
 -- Displays N/A for unknown items, 0 for items explicitly valued at zero.
 -- A value file without prices cannot produce real Traderie prices.
 local Players = game:GetService('Players')
@@ -34,26 +34,71 @@ local iconData = loadFile('icons.json')
 for id,name in pairs(iconData.items or {}) do iconNames[tostring(id)] = tostring(name) end
 
 local gui = Instance.new('ScreenGui')
-gui.Name = 'MM2ValuesOverlayV4'
+gui.Name = 'MM2ValuesOverlayV5'
 gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
+gui.IgnoreGuiInset = false
 gui.DisplayOrder = 10000
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = pg
 
--- Small sanity-check label. If this is invisible, item positions are not the issue.
+-- Known-working, draggable status bar and X button
+local UIS = game:GetService('UserInputService')
+local bar = Instance.new('Frame')
+bar.Name = 'StatusBar'
+bar.Size = UDim2.fromOffset(220, 34)
+bar.Position = UDim2.fromOffset(30, 90)
+bar.BackgroundColor3 = Color3.fromRGB(28,30,38)
+bar.BorderSizePixel = 0
+bar.Active = true
+bar.ZIndex = 100
+bar.Parent = gui
+local corner = Instance.new('UICorner')
+corner.CornerRadius = UDim.new(0,7)
+corner.Parent = bar
 local status = Instance.new('TextLabel')
-status.Name = 'MM2OverlayStatus'
-status.Size = UDim2.fromOffset(225,25)
-status.Position = UDim2.fromOffset(8,68)
-status.Text = 'MM2 overlay V4: ON'
-status.BackgroundColor3 = Color3.fromRGB(20,20,20)
-status.BackgroundTransparency = 0.15
-status.TextColor3 = Color3.fromRGB(120,255,140)
-status.TextSize = 13
+status.Name = 'Status'
+status.Size = UDim2.new(1,-43,1,0)
+status.Position = UDim2.fromOffset(10,0)
+status.BackgroundTransparency = 1
+status.Text = 'MM2 Values | Active'
+status.TextColor3 = Color3.fromRGB(125,235,160)
+status.TextSize = 12
 status.Font = Enum.Font.GothamBold
-status.ZIndex = 100
-status.Parent = gui
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.ZIndex = 101
+status.Parent = bar
+local close = Instance.new('TextButton')
+close.Name = 'Close'
+close.Size = UDim2.fromOffset(30,28)
+close.Position = UDim2.new(1,-33,0,3)
+close.BackgroundTransparency = 1
+close.Text = 'X'
+close.TextSize = 17
+close.Font = Enum.Font.GothamBold
+close.TextColor3 = Color3.fromRGB(255,120,120)
+close.ZIndex = 102
+close.Parent = bar
+local dragging, dragStart, startPos = false, nil, nil
+-- Only drag from the title area, not the close button.
+table.insert(conns,bar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and UIS:GetFocusedTextBox() == nil then
+        local pos = input.Position
+        if pos.X < close.AbsolutePosition.X then
+            dragging = true
+            dragStart = pos
+            startPos = bar.Position
+        end
+    end
+end))
+table.insert(conns,UIS.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = input.Position - dragStart
+        bar.Position = UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+    end
+end))
+table.insert(conns,UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end
+end))
 
 local function inInventory(obj)
     local parent = obj
@@ -162,10 +207,11 @@ table.insert(conns,RunService.Heartbeat:Connect(function(dt)
             end
         end
     end
-    status.Text = 'MM2 overlay V4: '..shown..' labels'
+    status.Text = 'MM2 Values | '..shown..' labels'
 end))
 
 local function stop()
+    if not active then return end
     active=false
     for _,c in ipairs(conns) do c:Disconnect() end
     for _,label in pairs(labels) do if label.Parent then label:Destroy() end end
@@ -173,5 +219,6 @@ local function stop()
     log('Stopped')
 end
 env.MM2ValuesStop=stop
+table.insert(conns, close.MouseButton1Click:Connect(stop))
 log('Ready. Values loaded:',(function() local n=0 for _ in pairs(prices) do n+=1 end return n end)())
-log('You should see a GREEN status label at top left.')
+log('Draggable status bar ready; click X to stop.')
