@@ -3,7 +3,7 @@
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
-local repo = "REPLACE_USER/REPLACE_REPO" -- GitHub username/repo
+local repo = "zeebinski/MM2-Values" -- GitHub username/repo
 local url = "https://raw.githubusercontent.com/"..repo.."/main/values.json"
 
 if getgenv and getgenv().MM2ValuesStop then getgenv().MM2ValuesStop() end
